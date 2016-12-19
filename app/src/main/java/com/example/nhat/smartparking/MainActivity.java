@@ -84,21 +84,39 @@ public class MainActivity extends FragmentActivity
 
     // Array of airport names
     private String[] airport_names = {
-            "Incheon International Airport",
-            "Gimpo International Airport",
-            "Gimhae International Airport",
-            "Jeju International Airport",
-            "Daegu International Airport",
-            "Ulsan International Airport",
-            "Cheongju International Airport",
-            "Yangyang International Airport",
-            "Muan International Airport",
-            "Gwangju International Airport",
-            "Yeosu International Airport",
-            "Sichuan International Airport",
-            "Pohang International Airport",
-            "Gunsan International Airport",
-            "Wonju International Airport",
+            "Gimpo International Airport", // 0
+            "Gimhae International Airport", // 1
+            "Jeju International Airport", // 2
+            "Daegu International Airport", // 3
+            "Ulsan International Airport", // 4
+            "Gwangju International Airport", // 5
+            "Yeosu International Airport", // 6
+            "Gunsan International Airport", // 7
+            "Wonju International Airport", // 8
+    };
+
+    // GLN list
+    private String[][] parkingLotsGLNs = {
+            // Gimpo
+            {"urn:epc:id:sgln:0375557.12680.4", "urn:epc:id:sgln:0375557.12680.3",
+                    "urn:epc:id:sgln:0375557.12680.2", "urn:epc:id:sgln:0375557.12680.1"},
+            // Gimhae
+            {"urn:epc:id:sgln:0351728.12894.3", "urn:epc:id:sgln:0351728.12894.2",
+            "urn:epc:id:sgln:0351728.12894.1"},
+            // Jeju
+            {"urn:epc:id:sgln:0335065.12649.2", "urn:epc:id:sgln:0335065.12649.1"},
+            // Daegu
+            {"urn:epc:id:sgln:0355327.12839.2", "urn:epc:id:sgln:0355327.12839.1"},
+            // Ulsan
+            {"urn:epc:id:sgln:0353536.12921.1"},
+            // Gwangju
+            {"urn:epc:id:sgln:0350730.12648.2", "urn:epc:id:sgln:0350730.12648.1"},
+            // Yeosu
+            {"urn:epc:id:sgln:0345024.12736.1"},
+            // Gusan
+            {"urn:epc:id:sgln:0354006.12637.1"},
+            // Wonju
+            {"urn:epc:id:sgln:0352630.12757.1"}
     };
 
     @Override
@@ -296,11 +314,23 @@ public class MainActivity extends FragmentActivity
             Log.d("Main", "nearest_airport_location = null");
         }
 
-        // Connect to ONS server
+        // Assume that we already has GLNs, connect to ONS server to get url to EPICS
 
+        // Test some FQDNs
+        String ONSAddress = "110.76.91.123";
+        String FQDNs;
+
+        FQDNs = "2.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
+        new HttpAsyncTask().execute(ONSAddress, FQDNs);
+
+        FQDNs = "1.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
+        new HttpAsyncTask().execute(ONSAddress, FQDNs);
+
+        FQDNs = "1.8.0.0.0.0.1.2.3.4.5.8.8.gtin.gs1.id.onsepc.kr";
+        new HttpAsyncTask().execute(ONSAddress, FQDNs);
     }
 
-    // Google API Callbacks.
+    /********************************* Google API Callbacks. **************************************/
     @Override
     public void onConnectionFailed(ConnectionResult result) {
         Log.d("Main", "onConnectionFailed");
@@ -348,7 +378,7 @@ public class MainActivity extends FragmentActivity
         super.onStop();
     }
 
-    // EPCIS and ONS
+    /************************** EPCIS and ONS *****************************************************/
     public static String GET(String url){
         InputStream inputStream = null;
         String result = "";
@@ -363,14 +393,14 @@ public class MainActivity extends FragmentActivity
             // receive response as inputStream
             inputStream = httpResponse.getEntity().getContent();
 
-            // convert inputstream to string
+            // convert input stream to string
             if(inputStream != null)
                 result = convertInputStreamToString(inputStream);
             else
                 result = "Did not work!";
 
         } catch (Exception e) {
-            Log.d("InputStream", e.getLocalizedMessage());
+            Log.d("Main", e.getLocalizedMessage());
         }
 
         return result;
@@ -388,44 +418,64 @@ public class MainActivity extends FragmentActivity
 
     }
 
+    private static String GlnToFQDN (String gln) {
+        // TODO Auto-generated method stub
+        String retFQDN = "";
+        char[] remainCA;
+
+        remainCA = gln.toCharArray();
+        for( int i = remainCA.length-1 ; i >= 0 ; i--)
+        {
+            retFQDN += remainCA[i]+".";
+        }
+
+        retFQDN += "gln.gs1.id.onsepc.kr";
+
+        return retFQDN;
+    }
+
     private class HttpAsyncTask extends AsyncTask<String, Void, String> {
         @Override
         protected String doInBackground(String... urls) {
-        //////////////////// ONS!!!
-            String RESOLVER_ADDRESS = "110.76.91.123";
-            //String DN = "1.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
-            String DN = "1.8.0.0.0.0.1.2.3.4.5.8.8.gtin.gs1.id.onsepc.kr";
+            String result = null;
+
+            //////////////////// ONS!!!
+            String ONSAddress = urls[0];
+            String QFDN = urls[1];
             try {
-                Lookup.setDefaultResolver(new SimpleResolver(RESOLVER_ADDRESS));
+                Lookup.setDefaultResolver(new SimpleResolver(ONSAddress));
             } catch (UnknownHostException e) {
                 e.printStackTrace();
             }
 
             try {
-                System.out.println("[RYUN] request : " + DN);
-                Lookup lookup = new Lookup(DN, Type.NAPTR);
+                Log.d("Main", "HttpAsyncTask: request " + QFDN + " to " + ONSAddress);
+                Lookup lookup = new Lookup(QFDN, Type.NAPTR);
                 Record[] records = lookup.run();
 
                 if (lookup.getResult() == Lookup.SUCCESSFUL) {
                     for (Record record : records) {
                         NAPTRRecord naptrRecord = (NAPTRRecord) record;
 
-                        String result = naptrRecord.toString();
-                        System.out.println("[RYUN] result: " + result);
+                        result = naptrRecord.toString();
+                        Log.d("Main", "HttpAsyncTask: result for " + QFDN + " : " + result);
                     }
                 }
-            } catch (Exception ignored) {
-
+            } catch (Exception e) {
+                Log.d("Main", "HttpAsyncTask: " + e);
             }
             ////////////////////
-            return GET(urls[0]); ///// for EPCIS
+            //return GET(urls[0]); ///// for EPCIS
+
+            return result;
         }
+
         // onPostExecute displays the results of the AsyncTask.
         @Override
         protected void onPostExecute(String result) {
-            Toast.makeText(getBaseContext(), "Received!", Toast.LENGTH_LONG).show();
-            etResponse.setText(result);
-            ResultText.setText(result);
+//            Toast.makeText(getBaseContext(), "Received!", Toast.LENGTH_LONG).show();
+//            etResponse.setText(result);
+//            ResultText.setText(result);
         }
     }
 }
