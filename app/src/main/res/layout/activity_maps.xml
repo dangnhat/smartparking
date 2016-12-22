@@ -7,13 +7,13 @@
     tools:layout="@layout/dummy_mapviewfragment">
 
     <Button
-        android:text="To The Nearest Airport"
+        android:text="FindParkingLots"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:id="@+id/button1"
         android:gravity="center_vertical|center"
         android:layout_gravity="center|bottom"
-        android:onClick="toNearestAirport" />
+        android:onClick="findParkingLots" />
 
     <fragment
         android:id="@+id/map"

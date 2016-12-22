@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,6 +30,8 @@ import org.xbill.DNS.Resolver;
 import org.xbill.DNS.SimpleResolver;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
+import org.xmlpull.v1.XmlPullParser;
+import org.xmlpull.v1.XmlPullParserFactory;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
@@ -63,8 +66,13 @@ import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.LatLngBounds;
+import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
+import com.google.maps.android.ui.BubbleIconFactory;
+import com.google.maps.android.ui.IconGenerator;
 
 import java.io.IOException;
 import java.util.List;
@@ -78,9 +86,24 @@ public class MainActivity extends FragmentActivity
     private GoogleApiClient mGoogleApiClient;
     private Location current_location;
 
-    // EPCIS and ONS
-    EditText etResponse;
-    EditText ResultText;
+    // GLNs list
+    public class GLN_list{
+        public String gln;
+        public String name_of_parking_lot;
+        public String latitude;
+        public String longitude;
+    }
+
+    ArrayList<GLN_list> GLNsList = null;
+
+    // EPCIS urls list
+    ArrayList<String> EPCISUrls = null;
+
+    // Smart search URL
+    String SmartSearchURL = "http://143.248.53.173:10023/epcis/Service/Poll/SimpleEventQuery?";
+
+    // ONS
+    String ONSAddress = "110.76.91.123";
 
     // Array of airport names
     private String[] airport_names = {
@@ -93,30 +116,6 @@ public class MainActivity extends FragmentActivity
             "Yeosu International Airport", // 6
             "Gunsan International Airport", // 7
             "Wonju International Airport", // 8
-    };
-
-    // GLN list
-    private String[][] parkingLotsGLNs = {
-            // Gimpo
-            {"urn:epc:id:sgln:0375557.12680.4", "urn:epc:id:sgln:0375557.12680.3",
-                    "urn:epc:id:sgln:0375557.12680.2", "urn:epc:id:sgln:0375557.12680.1"},
-            // Gimhae
-            {"urn:epc:id:sgln:0351728.12894.3", "urn:epc:id:sgln:0351728.12894.2",
-            "urn:epc:id:sgln:0351728.12894.1"},
-            // Jeju
-            {"urn:epc:id:sgln:0335065.12649.2", "urn:epc:id:sgln:0335065.12649.1"},
-            // Daegu
-            {"urn:epc:id:sgln:0355327.12839.2", "urn:epc:id:sgln:0355327.12839.1"},
-            // Ulsan
-            {"urn:epc:id:sgln:0353536.12921.1"},
-            // Gwangju
-            {"urn:epc:id:sgln:0350730.12648.2", "urn:epc:id:sgln:0350730.12648.1"},
-            // Yeosu
-            {"urn:epc:id:sgln:0345024.12736.1"},
-            // Gusan
-            {"urn:epc:id:sgln:0354006.12637.1"},
-            // Wonju
-            {"urn:epc:id:sgln:0352630.12757.1"}
     };
 
     @Override
@@ -197,20 +196,6 @@ public class MainActivity extends FragmentActivity
         // Turn on current location
         mMap.setMyLocationEnabled(true);
 
-        // Add a marker at KAIST
-        LatLng kaist = new LatLng(36.368203, 127.363764);
-        mMap.addMarker(new MarkerOptions().position(kaist).title("KAIST"));
-
-        // Add a marker at some parking lots
-        LatLng park1 = new LatLng(36.340645, 127.391122);
-        mMap.addMarker(new MarkerOptions().position(park1).title("Parking Lot #1"));
-
-        LatLng park2 = new LatLng(36.34, 127.37);
-        mMap.addMarker(new MarkerOptions().position(park2).title("Parking Lot #2"));
-
-        LatLng park3 = new LatLng(36.35, 127.36);
-        mMap.addMarker(new MarkerOptions().position(park3).title("Parking Lot #3"));
-
         Log.d("Main", "onMapReady: get current location");
         /* Get current location */
         LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
@@ -254,80 +239,136 @@ public class MainActivity extends FragmentActivity
         }
     }
 
+    // Add Bubble icon on the map
+    private void addIcon(GoogleMap map, IconGenerator iconFactory, CharSequence text, LatLng position) {
+        MarkerOptions markerOptions = new MarkerOptions().
+                icon(BitmapDescriptorFactory.fromBitmap(iconFactory.makeIcon(text))).
+                position(position).
+                anchor(iconFactory.getAnchorU(), iconFactory.getAnchorV());
+
+        map.addMarker(markerOptions);
+    }
+
+
     // Button1 click
-    public void toNearestAirport(View view) throws IOException {
-        Log.d("Main", "toNearestAirport: button1 clicked");
+    public void findParkingLots(View view) throws IOException {
+        Log.d("Main", "findParkingLots: button1 clicked");
+        IconGenerator iconFactory = new IconGenerator(this);
 
-        // Find the nearest airport
-        double min_distance = -1, distance;
-        Geocoder mGeocode = new Geocoder(this);
-        Location nearest_airport_location = null;
+        // Get current view coordinates
 
-        for (String airport_name : airport_names) {
-            // Find distance to each each airport
-            Log.d("Main", "toNearestAirport: Get coordinates of " + airport_name);
-            List<Address> addresses = mGeocode.getFromLocationName(airport_name, 1);
-            if (addresses.size() > 0) {
-                Log.d("Main", "toNearestAirport: coordinates:" + String.valueOf(addresses.get(0).getLatitude())
-                        + ", " + String.valueOf(addresses.get(0).getLongitude()));
+        // Get GLNs from current view coordinates
+        GetGLNsFromSmartSearch getGLNsTask = new GetGLNsFromSmartSearch();
+        getGLNsTask.execute(SmartSearchURL);
+        try {
+            Log.d("Main", "findParkingLots: waiting for GetGLNsFromSmartSearch to finish");
+            GLNsList = getGLNsTask.get();
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
 
-                Location airport_location = new Location(airport_name);
-                airport_location.setLatitude((addresses.get(0).getLatitude()));
-                airport_location.setLongitude((addresses.get(0).getLongitude()));
+        /* Show on map */
+        for (GLN_list glnTemp : GLNsList) {
+            LatLng coor = new LatLng(Double.parseDouble(glnTemp.latitude),
+                    Double.parseDouble(glnTemp.longitude));
 
-                // Get distance for current location
-                distance = current_location.distanceTo(airport_location);
-                Log.d("Main", "toNearestAirport: current distance: " + String.valueOf(distance));
+            iconFactory.setStyle(IconGenerator.STYLE_GREEN);
+            addIcon(mMap, iconFactory, glnTemp.name_of_parking_lot + ", ?/?", coor);
 
-                // Compare with min_distance
-                if (min_distance < 0) {
-                    min_distance = distance;
-                    nearest_airport_location = airport_location;
+            Log.d("Main", "findParkingLots: added marker of " + glnTemp.gln + " at " +
+                    glnTemp.latitude + ", " + glnTemp.longitude);
+        }
 
-                    Log.d("Main", "toNearestAirport: min_distance updated: " + String.valueOf(distance)
-                    + "(m) airport: " + nearest_airport_location.getProvider());
-                }
-                else{
-                    if (distance < min_distance) {
-                        min_distance = distance;
-                        nearest_airport_location = airport_location;
-
-                        Log.d("Main", "toNearestAirport: min_distance updated: " + String.valueOf(distance)
-                                + "(m) airport: " + nearest_airport_location.getProvider());
-                    }
-                    else {
-                        Log.d("Main", "toNearestAirport: distance >= min_distance, do nothing");
-                    }
-                }
+        /* Use GLNs to get EPCIS server urls */
+        for (GLN_list glnTemp : GLNsList) {
+            GetEPCISURLFromONS getEPCISURLTask = new GetEPCISURLFromONS();
+            getEPCISURLTask.execute(ONSAddress, glnTemp.gln);
+            try {
+                String epcisUrl = getEPCISURLTask.get();
+                EPCISUrls.add(epcisUrl);
+            }
+            catch (Exception e) {
+                e.printStackTrace();
             }
         }
 
-        // Add marker and animate camera
-        if (nearest_airport_location != null) {
-            LatLng nearest_airport_coor = new LatLng(nearest_airport_location.getLatitude(),
-                    nearest_airport_location.getLongitude());
-
-            mMap.addMarker(new MarkerOptions().position(nearest_airport_coor).title(nearest_airport_location.getProvider()));
-            mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(nearest_airport_coor, 14));
-        }
-        else {
-            Log.d("Main", "nearest_airport_location = null");
-        }
-
-        // Assume that we already has GLNs, connect to ONS server to get url to EPICS
-
-        // Test some FQDNs
-        String ONSAddress = "110.76.91.123";
-        String FQDNs;
-
-        FQDNs = "2.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
-        new HttpAsyncTask().execute(ONSAddress, FQDNs);
-
-        FQDNs = "1.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
-        new HttpAsyncTask().execute(ONSAddress, FQDNs);
-
-        FQDNs = "1.8.0.0.0.0.1.2.3.4.5.8.8.gtin.gs1.id.onsepc.kr";
-        new HttpAsyncTask().execute(ONSAddress, FQDNs);
+//        // Find the nearest airport
+//        double min_distance = -1, distance;
+//        Geocoder mGeocode = new Geocoder(this);
+//        Location nearest_airport_location = null;
+//
+//        for (String airport_name : airport_names) {
+//            // Find distance to each each airport
+//            Log.d("Main", "findParkingLots: Get coordinates of " + airport_name);
+//            List<Address> addresses = mGeocode.getFromLocationName(airport_name, 1);
+//            if (addresses.size() > 0) {
+//                Log.d("Main", "findParkingLots: coordinates:" + String.valueOf(addresses.get(0).getLatitude())
+//                        + ", " + String.valueOf(addresses.get(0).getLongitude()));
+//
+//                Location airport_location = new Location(airport_name);
+//                airport_location.setLatitude((addresses.get(0).getLatitude()));
+//                airport_location.setLongitude((addresses.get(0).getLongitude()));
+//
+//                // Get distance for current location
+//                distance = current_location.distanceTo(airport_location);
+//                Log.d("Main", "findParkingLots: current distance: " + String.valueOf(distance));
+//
+//                // Compare with min_distance
+//                if (min_distance < 0) {
+//                    min_distance = distance;
+//                    nearest_airport_location = airport_location;
+//
+//                    Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
+//                    + "(m) airport: " + nearest_airport_location.getProvider());
+//                }
+//                else{
+//                    if (distance < min_distance) {
+//                        min_distance = distance;
+//                        nearest_airport_location = airport_location;
+//
+//                        Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
+//                                + "(m) airport: " + nearest_airport_location.getProvider());
+//                    }
+//                    else {
+//                        Log.d("Main", "findParkingLots: distance >= min_distance, do nothing");
+//                    }
+//                }
+//            }
+//        }
+//
+//        // Add marker and animate camera
+//        if (nearest_airport_location != null) {
+//            LatLng nearest_airport_coor = new LatLng(nearest_airport_location.getLatitude(),
+//                    nearest_airport_location.getLongitude());
+//
+//            mMap.addMarker(new MarkerOptions().position(nearest_airport_coor).title(nearest_airport_location.getProvider()));
+//            mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(nearest_airport_coor, 14));
+//
+//            // Get current boundaries
+//            LatLngBounds curScreen = mMap.getProjection().getVisibleRegion().latLngBounds;
+//            Log.d("Main", "findParkingLots: current boundaries NE: " + curScreen.northeast + " SW: "
+//            + curScreen.southwest);
+//
+//        }
+//        else {
+//            Log.d("Main", "findParkingLots: nearest_airport_location = null");
+//        }
+//
+//        // Assume that we already has GLNs, connect to ONS server to get url to EPICS
+//
+//        // Test some FQDNs
+//        String ONSAddress = "110.76.91.123";
+//        String FQDNs;
+//
+//        FQDNs = "2.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
+//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
+//
+//        FQDNs = "1.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
+//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
+//
+//        FQDNs = "1.8.0.0.0.0.1.2.3.4.5.8.8.gtin.gs1.id.onsepc.kr";
+//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
     }
 
     /********************************* Google API Callbacks. **************************************/
@@ -381,7 +422,7 @@ public class MainActivity extends FragmentActivity
     /************************** EPCIS and ONS *****************************************************/
     public static String GET(String url){
         InputStream inputStream = null;
-        String result = "";
+        String result = null;
         try {
 
             // create HttpClient
@@ -394,10 +435,12 @@ public class MainActivity extends FragmentActivity
             inputStream = httpResponse.getEntity().getContent();
 
             // convert input stream to string
-            if(inputStream != null)
+            if(inputStream != null) {
                 result = convertInputStreamToString(inputStream);
-            else
-                result = "Did not work!";
+            }
+            else {
+                Log.d("Main", "GET: inpuStream == null.");
+            }
 
         } catch (Exception e) {
             Log.d("Main", e.getLocalizedMessage());
@@ -418,7 +461,7 @@ public class MainActivity extends FragmentActivity
 
     }
 
-    private static String GlnToFQDN (String gln) {
+    private static String GLNToFQDN (String gln) {
         // TODO Auto-generated method stub
         String retFQDN = "";
         char[] remainCA;
@@ -426,6 +469,10 @@ public class MainActivity extends FragmentActivity
         remainCA = gln.toCharArray();
         for( int i = remainCA.length-1 ; i >= 0 ; i--)
         {
+            if (remainCA[i] == '.') {
+                continue;
+            }
+
             retFQDN += remainCA[i]+".";
         }
 
@@ -434,14 +481,114 @@ public class MainActivity extends FragmentActivity
         return retFQDN;
     }
 
-    private class HttpAsyncTask extends AsyncTask<String, Void, String> {
+    /* Get list of GLNs from Smart Search server */
+    private class GetGLNsFromSmartSearch extends AsyncTask<String, Void, ArrayList<GLN_list>> {
+        @Override
+        protected ArrayList<GLN_list> doInBackground(String... urls) {
+            String result=GET(urls[0]);
+            ArrayList<GLN_list> glnLists;
+            glnLists=PullParserFromXML(result);
+
+            Log.d("Main", "GetGLNsFromSmartSearch: " + String.valueOf(glnLists.size()));
+
+            return glnLists;
+        }
+
+        public ArrayList<GLN_list> PullParserFromXML(String data){
+            ArrayList<GLN_list> xml=new ArrayList<GLN_list>();
+            GLN_list dummy=new GLN_list();
+            boolean is_gln=false;
+            boolean is_latitude=false;
+            boolean is_longitude=false;
+            boolean is_address=false;
+            Log.d("Main","PullParserFromXML: start parsing");
+            try
+            {
+                XmlPullParserFactory factory=XmlPullParserFactory.newInstance();
+                XmlPullParser parser=factory.newPullParser();
+                String stag;
+
+                parser.setInput(new StringReader(data));
+                int eventtype=parser.getEventType();
+
+                while(eventtype!=XmlPullParser.END_DOCUMENT)
+                {
+                    switch(eventtype)
+                    {
+                        case XmlPullParser.START_DOCUMENT:
+
+                            break;
+                        case XmlPullParser.END_DOCUMENT:
+                            break;
+                        case XmlPullParser.START_TAG:
+                            stag=parser.getName();
+                            if(stag.equals("id"))
+                                is_gln=true;
+                            else if(stag.equals("parkingspace:gps_latitude"))
+                                is_latitude=true;
+                            else if(stag.equals("parkingspace:gps_longitude"))
+                                is_longitude=true;
+                            else if(stag.equals("parkingspace:parkingspace_name"))
+                                is_address=true;
+                            break;
+                        case XmlPullParser.TEXT:
+                            if(is_gln)
+                            {
+                                dummy=new GLN_list();
+                                dummy.gln=parser.getText();
+                                is_gln=false;
+                            }
+                            if(is_latitude)
+                            {
+                                dummy.latitude=parser.getText();
+                                is_latitude=false;
+                            }
+                            if(is_longitude)
+                            {
+                                dummy.longitude=parser.getText();
+                                is_longitude=false;
+                            }
+                            if(is_address) {
+                                Log.i("address_test",parser.getText());
+                                dummy.name_of_parking_lot = parser.getText();
+                                xml.add(dummy);
+                                is_address = false;
+                                dummy=null;
+                            }
+                    }
+                    eventtype=parser.next();
+                    if(xml!=null)
+                        Log.i("test",String.valueOf(xml.size()));
+                }
+            }catch(Exception ex)
+            {
+                ex.printStackTrace();
+            }
+            Log.d("Main", "PullParserFromXML: xml size " + String.valueOf(xml.size()));
+            return xml;
+        }
+    }
+
+    /* Get ONS entries */
+    private class GetEPCISURLFromONS extends AsyncTask<String, Void, String> {
         @Override
         protected String doInBackground(String... urls) {
             String result = null;
+            String ONSRecord = null;
 
             //////////////////// ONS!!!
             String ONSAddress = urls[0];
-            String QFDN = urls[1];
+            String GLN = urls[1];
+            String QFDN;
+
+            /* Convert GLN to QFDN */
+            if (GLN.contains("urn:epc:id:sgln:")) {
+                GLN = GLN.substring(GLN.indexOf("urn:epc:id:sgln:") + "urn:epc:id:sgln:".length());
+            }
+
+            QFDN = GLNToFQDN(GLN);
+            Log.d("Main", "GetEPCISURLFromONS: converted " + GLN + " to " + QFDN);
+
             try {
                 Lookup.setDefaultResolver(new SimpleResolver(ONSAddress));
             } catch (UnknownHostException e) {
@@ -449,7 +596,7 @@ public class MainActivity extends FragmentActivity
             }
 
             try {
-                Log.d("Main", "HttpAsyncTask: request " + QFDN + " to " + ONSAddress);
+                Log.d("Main", "GetEPCISURLFromONS: request " + QFDN + " to " + ONSAddress);
                 Lookup lookup = new Lookup(QFDN, Type.NAPTR);
                 Record[] records = lookup.run();
 
@@ -457,25 +604,24 @@ public class MainActivity extends FragmentActivity
                     for (Record record : records) {
                         NAPTRRecord naptrRecord = (NAPTRRecord) record;
 
-                        result = naptrRecord.toString();
-                        Log.d("Main", "HttpAsyncTask: result for " + QFDN + " : " + result);
+                        ONSRecord = naptrRecord.toString();
+                        Log.d("Main", "GetEPCISURLFromONS: result for " + QFDN + " : " + ONSRecord);
                     }
                 }
             } catch (Exception e) {
-                Log.d("Main", "HttpAsyncTask: " + e);
+                Log.d("Main", "GetEPCISURLFromONS: " + e);
             }
-            ////////////////////
-            //return GET(urls[0]); ///// for EPCIS
+
+            /* Parse NAPTR to get EPICS url */
+            if (ONSRecord == null) {
+                Log.d("Main", "GetEPCISURLFromONS: ONSRecord is null");
+                return null;
+            }
+
+            result = ONSRecord.substring(ONSRecord.indexOf("!^.*$!") + "!^.*$!".length(), ONSRecord.lastIndexOf('!'));
+            Log.d("Main", "GetEPCISURLFromONS: epcis url: " + result);
 
             return result;
-        }
-
-        // onPostExecute displays the results of the AsyncTask.
-        @Override
-        protected void onPostExecute(String result) {
-//            Toast.makeText(getBaseContext(), "Received!", Toast.LENGTH_LONG).show();
-//            etResponse.setText(result);
-//            ResultText.setText(result);
         }
     }
 }
