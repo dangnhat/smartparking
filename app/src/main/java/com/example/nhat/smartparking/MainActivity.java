@@ -7,57 +7,36 @@ import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
-import java.util.List;
 
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.DefaultHttpClient;
 
-import org.xbill.DNS.*;
 import org.xbill.DNS.Lookup;
-import org.xbill.DNS.MXRecord;
 import org.xbill.DNS.Record;
-import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
-import org.xbill.DNS.Cache;
-import org.xbill.DNS.DClass;
-import org.xbill.DNS.Lookup;
 import org.xbill.DNS.NAPTRRecord;
-import org.xbill.DNS.Record;
-import org.xbill.DNS.Resolver;
 import org.xbill.DNS.SimpleResolver;
-import org.xbill.DNS.TextParseException;
-import org.xbill.DNS.Type;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Handler;
 import android.util.Log;
-import android.widget.EditText;
-import android.widget.TextView;
-import android.widget.Toast;
-import android.app.Activity;
 
 import android.content.pm.PackageManager;
-import android.location.Address;
 import android.location.Criteria;
-import android.location.Geocoder;
 import android.location.Location;
 import android.location.LocationManager;
 import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentActivity;
 import android.support.v4.content.ContextCompat;
-import android.os.Bundle;
 import android.Manifest;
-import android.util.Log;
 import android.view.View;
-import android.widget.Button;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -69,13 +48,8 @@ import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.LatLngBounds;
-import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
-import com.google.maps.android.ui.BubbleIconFactory;
 import com.google.maps.android.ui.IconGenerator;
-
-import java.io.IOException;
-import java.util.List;
 
 public class MainActivity extends FragmentActivity
         implements OnMapReadyCallback,
@@ -86,18 +60,35 @@ public class MainActivity extends FragmentActivity
     private GoogleApiClient mGoogleApiClient;
     private Location current_location;
 
-    // GLNs list
-    public class GLN_list{
+    // Parking lot info format
+    public class ParkingLotInfo {
         public String gln;
         public String name_of_parking_lot;
         public String latitude;
         public String longitude;
+        public String EPCISServer;
+        public String address;
+        public int maxCapacity;
+        public int availableSpaces;
     }
 
-    ArrayList<GLN_list> GLNsList = null;
+    // Master data format
+    public class MasterData {
+        public String gln;
+        public String parking_name;
+        public String address;
+    }
 
-    // EPCIS urls list
-    ArrayList<String> EPCISUrls = null;
+    // Event data format
+    public class EventData {
+        public String gln;
+        public int availableSpaces;
+    }
+
+    ArrayList<ParkingLotInfo> ParkingLotInfoList = null;
+
+    // Updating period
+    private int UpdatingPeriod = 2*60*1000; // ms
 
     // Smart search URL
     String SmartSearchURL = "http://143.248.53.173:10023/epcis/Service/Poll/SimpleEventQuery?";
@@ -249,126 +240,248 @@ public class MainActivity extends FragmentActivity
         map.addMarker(markerOptions);
     }
 
-
     // Button1 click
     public void findParkingLots(View view) throws IOException {
         Log.d("Main", "findParkingLots: button1 clicked");
-        IconGenerator iconFactory = new IconGenerator(this);
 
         // Get current view coordinates
+        LatLngBounds currentBounds = mMap.getProjection().getVisibleRegion().latLngBounds;
+        Log.d("Main", "findParkingLots: " + currentBounds);
+
+        String smartSearchUrlWBounds = SmartSearchURL +
+                "LT_http://www.tta.or.kr/epcis/schema/parkingspace.xsd%23gps_latitude=" +
+                currentBounds.northeast.latitude + "&" +
+                "GE_http://www.tta.or.kr/epcis/schema/parkingspace.xsd%23gps_latitude=" +
+                currentBounds.southwest.latitude + "&" +
+                "LT_http://www.tta.or.kr/epcis/schema/parkingspace.xsd%23gps_longitude=" +
+                currentBounds.northeast.longitude + "&" +
+                "GE_http://www.tta.or.kr/epcis/schema/parkingspace.xsd%23gps_longitude=" +
+                currentBounds.southwest.longitude + "&";
+        Log.d("Main", "smartSearchUrlWBounds: " + smartSearchUrlWBounds);
 
         // Get GLNs from current view coordinates
         GetGLNsFromSmartSearch getGLNsTask = new GetGLNsFromSmartSearch();
-        getGLNsTask.execute(SmartSearchURL);
+        getGLNsTask.execute(smartSearchUrlWBounds);
         try {
             Log.d("Main", "findParkingLots: waiting for GetGLNsFromSmartSearch to finish");
-            GLNsList = getGLNsTask.get();
+            ParkingLotInfoList = getGLNsTask.get();
         }
         catch (Exception e) {
             e.printStackTrace();
         }
 
-        /* Show on map */
-        for (GLN_list glnTemp : GLNsList) {
-            LatLng coor = new LatLng(Double.parseDouble(glnTemp.latitude),
-                    Double.parseDouble(glnTemp.longitude));
-
-            iconFactory.setStyle(IconGenerator.STYLE_GREEN);
-            addIcon(mMap, iconFactory, glnTemp.name_of_parking_lot + ", ?/?", coor);
-
-            Log.d("Main", "findParkingLots: added marker of " + glnTemp.gln + " at " +
-                    glnTemp.latitude + ", " + glnTemp.longitude);
+        /* Use GLNs to get EPCIS server urls */
+//        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+//            GetEPCISURLFromONS getEPCISURLTask = new GetEPCISURLFromONS();
+//            getEPCISURLTask.execute(ONSAddress, parkingLotInfoTemp.gln);
+//            try {
+//                parkingLotInfoTemp.EPCISServer = getEPCISURLTask.get();
+//                Log.d("Main", "findParkingLots: got EPCIS URL for " + parkingLotInfoTemp.gln + ": "
+//                + parkingLotInfoTemp.EPCISServer);
+//            }
+//            catch (Exception e) {
+//                e.printStackTrace();
+//            }
+//        }
+        /* Test while ONS is not available */
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            parkingLotInfoTemp.EPCISServer = "http://143.248.53.173:10022";
         }
 
-        /* Use GLNs to get EPCIS server urls */
-        for (GLN_list glnTemp : GLNsList) {
-            GetEPCISURLFromONS getEPCISURLTask = new GetEPCISURLFromONS();
-            getEPCISURLTask.execute(ONSAddress, glnTemp.gln);
+        /* Get Master and Event data */
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+
+            /* Master data */
+            String MasterDataUrl = parkingLotInfoTemp.EPCISServer
+                    + "/epcis/Service/Poll/SimpleMasterDataQuery?includeAttributes=true&includeChildren=true&vocabularyName=urn:epcglobal:epcis:vtype:ParkingSpace&EQ_name="
+                    + parkingLotInfoTemp.gln + "&";
+
+            GetMasterData getMasterDataTask = new GetMasterData();
+            getMasterDataTask.execute(MasterDataUrl);
+
+            Log.d("Main", "findParkingLots: getting master data with url: " + MasterDataUrl);
+
             try {
-                String epcisUrl = getEPCISURLTask.get();
-                EPCISUrls.add(epcisUrl);
+                MasterData masterData = getMasterDataTask.get();
+
+                parkingLotInfoTemp.address = masterData.address;
+                Log.d("Main", "findParkingLots: address: " + parkingLotInfoTemp.address);
             }
             catch (Exception e) {
                 e.printStackTrace();
             }
+
+            /* Event data */
+            String EventDataUrl = parkingLotInfoTemp.EPCISServer
+                    + "/epcis/Service/Poll/SimpleEventQuery?EQ_bizLocation="
+                    + parkingLotInfoTemp.gln
+                    + "&orderBy=eventTime&orderDirection=DESC&eventCountLimit=1&";
+            GetEventData getEventDataTask = new GetEventData();
+            getEventDataTask.execute(EventDataUrl);
+
+            Log.d("Main", "findParkingLots: getting event data with url: " + EventDataUrl);
+
+            try {
+                EventData eventData = getEventDataTask.get();
+
+                parkingLotInfoTemp.availableSpaces = eventData.availableSpaces;
+                Log.d("Main", "findParkingLots: availableSpaces: " + parkingLotInfoTemp.availableSpaces);
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
+
         }
 
-//        // Find the nearest airport
-//        double min_distance = -1, distance;
-//        Geocoder mGeocode = new Geocoder(this);
-//        Location nearest_airport_location = null;
-//
-//        for (String airport_name : airport_names) {
-//            // Find distance to each each airport
-//            Log.d("Main", "findParkingLots: Get coordinates of " + airport_name);
-//            List<Address> addresses = mGeocode.getFromLocationName(airport_name, 1);
-//            if (addresses.size() > 0) {
-//                Log.d("Main", "findParkingLots: coordinates:" + String.valueOf(addresses.get(0).getLatitude())
-//                        + ", " + String.valueOf(addresses.get(0).getLongitude()));
-//
-//                Location airport_location = new Location(airport_name);
-//                airport_location.setLatitude((addresses.get(0).getLatitude()));
-//                airport_location.setLongitude((addresses.get(0).getLongitude()));
-//
-//                // Get distance for current location
-//                distance = current_location.distanceTo(airport_location);
-//                Log.d("Main", "findParkingLots: current distance: " + String.valueOf(distance));
-//
-//                // Compare with min_distance
-//                if (min_distance < 0) {
-//                    min_distance = distance;
-//                    nearest_airport_location = airport_location;
-//
-//                    Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
-//                    + "(m) airport: " + nearest_airport_location.getProvider());
-//                }
-//                else{
-//                    if (distance < min_distance) {
-//                        min_distance = distance;
-//                        nearest_airport_location = airport_location;
-//
-//                        Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
-//                                + "(m) airport: " + nearest_airport_location.getProvider());
-//                    }
-//                    else {
-//                        Log.d("Main", "findParkingLots: distance >= min_distance, do nothing");
-//                    }
-//                }
-//            }
-//        }
-//
-//        // Add marker and animate camera
-//        if (nearest_airport_location != null) {
-//            LatLng nearest_airport_coor = new LatLng(nearest_airport_location.getLatitude(),
-//                    nearest_airport_location.getLongitude());
-//
-//            mMap.addMarker(new MarkerOptions().position(nearest_airport_coor).title(nearest_airport_location.getProvider()));
-//            mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(nearest_airport_coor, 14));
-//
-//            // Get current boundaries
-//            LatLngBounds curScreen = mMap.getProjection().getVisibleRegion().latLngBounds;
-//            Log.d("Main", "findParkingLots: current boundaries NE: " + curScreen.northeast + " SW: "
-//            + curScreen.southwest);
-//
-//        }
-//        else {
-//            Log.d("Main", "findParkingLots: nearest_airport_location = null");
-//        }
-//
-//        // Assume that we already has GLNs, connect to ONS server to get url to EPICS
-//
-//        // Test some FQDNs
-//        String ONSAddress = "110.76.91.123";
-//        String FQDNs;
-//
-//        FQDNs = "2.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
-//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
-//
-//        FQDNs = "1.1.1.1.1.1.1.1.1.1.1.1.1.gln.gs1.id.onsepc.kr";
-//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
-//
-//        FQDNs = "1.8.0.0.0.0.1.2.3.4.5.8.8.gtin.gs1.id.onsepc.kr";
-//        new GetEPCISURLFromONS().execute(ONSAddress, FQDNs);
+        /* Show on map */
+        /* find the nearest parking lot with free spaces */
+        String nearestParkingLotGLN = null;
+        double min_distance = -1;
+
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            if (parkingLotInfoTemp.availableSpaces < 0) {
+                continue;
+            }
+
+            Location loc = new Location(parkingLotInfoTemp.gln);
+            loc.setLatitude(Double.parseDouble(parkingLotInfoTemp.latitude));
+            loc.setLongitude(Double.parseDouble(parkingLotInfoTemp.longitude));
+
+            double distance = current_location.distanceTo(loc);
+            Log.d ("Main", "findParkingLots: distance to " + loc.getProvider() + " : " + String.valueOf(distance));
+            if (min_distance < 0 || distance < min_distance)  {
+                min_distance = distance;
+                nearestParkingLotGLN = parkingLotInfoTemp.gln;
+
+                Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
+                    + "(m) gln: " + nearestParkingLotGLN);
+            }
+            else {
+                Log.d("Main", "findParkingLots: distance >= min_distance, do nothing");
+            }
+        }
+
+        Log.d("Main", "findParkingLots: nearest gln: " + nearestParkingLotGLN);
+
+        IconGenerator iconFactory = new IconGenerator(this);
+        mMap.clear();
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            LatLng coor = new LatLng(Double.parseDouble(parkingLotInfoTemp.latitude),
+                    Double.parseDouble(parkingLotInfoTemp.longitude));
+
+            if (parkingLotInfoTemp.gln == nearestParkingLotGLN) {
+                iconFactory.setStyle(IconGenerator.STYLE_BLUE);
+            }
+            else if (parkingLotInfoTemp.availableSpaces > 0) {
+                iconFactory.setStyle(IconGenerator.STYLE_GREEN);
+            }
+            else {
+                iconFactory.setStyle(IconGenerator.STYLE_RED);
+            }
+            addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + ", "
+                    + Integer.toString(parkingLotInfoTemp.availableSpaces), coor);
+
+            Log.d("Main", "findParkingLots: added marker of " + parkingLotInfoTemp.gln + " at " +
+                    parkingLotInfoTemp.latitude + ", " + parkingLotInfoTemp.longitude);
+        }
+
+        /* Enable updating parking lots info */
+        Log.d("Main", "findParkingLots: post timerRunnable for " + UpdatingPeriod/1000 + "s");
+        timerHandler.removeCallbacks(timerRunnable);
+        timerHandler.postDelayed(timerRunnable, UpdatingPeriod);
+    }
+
+    /********************************* Periodically update parking lots info  *********************/
+    Handler timerHandler = new Handler();
+    Runnable timerRunnable = new Runnable() {
+
+        @Override
+        public void run() {
+            Log.d("Main", "timerRunnable: update parking lots info");
+            updateParkingLotInfo();
+
+            Log.d("Main", "timerRunnable: post timerRunnable for " + UpdatingPeriod/1000 + "s");
+            timerHandler.postDelayed(this, UpdatingPeriod);
+        }
+    };
+
+    public void updateParkingLotInfo () {
+        /* Get Event data */
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            /* Event data */
+            String EventDataUrl = parkingLotInfoTemp.EPCISServer
+                    + "/epcis/Service/Poll/SimpleEventQuery?EQ_bizLocation="
+                    + parkingLotInfoTemp.gln
+                    + "&orderBy=eventTime&orderDirection=DESC&eventCountLimit=1&";
+            GetEventData getEventDataTask = new GetEventData();
+            getEventDataTask.execute(EventDataUrl);
+
+            Log.d("Main", "findParkingLots: getting event data with url: " + EventDataUrl);
+
+            try {
+                EventData eventData = getEventDataTask.get();
+
+                parkingLotInfoTemp.availableSpaces = eventData.availableSpaces;
+                Log.d("Main", "findParkingLots: availableSpaces: " + parkingLotInfoTemp.availableSpaces);
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
+
+        }
+
+        /* Show on map */
+        /* find the nearest parking lot with free spaces */
+        String nearestParkingLotGLN = null;
+        double min_distance = -1;
+
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            if (parkingLotInfoTemp.availableSpaces < 0) {
+                continue;
+            }
+
+            Location loc = new Location(parkingLotInfoTemp.gln);
+            loc.setLatitude(Double.parseDouble(parkingLotInfoTemp.latitude));
+            loc.setLongitude(Double.parseDouble(parkingLotInfoTemp.longitude));
+
+            double distance = current_location.distanceTo(loc);
+            Log.d ("Main", "findParkingLots: distance to " + loc.getProvider() + " : " + String.valueOf(distance));
+            if (min_distance < 0 || distance < min_distance)  {
+                min_distance = distance;
+                nearestParkingLotGLN = parkingLotInfoTemp.gln;
+
+                Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
+                        + "(m) gln: " + nearestParkingLotGLN);
+            }
+            else {
+                Log.d("Main", "findParkingLots: distance >= min_distance, do nothing");
+            }
+        }
+
+        Log.d("Main", "findParkingLots: nearest gln: " + nearestParkingLotGLN);
+
+        IconGenerator iconFactory = new IconGenerator(this);
+        mMap.clear();
+
+        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+            LatLng coor = new LatLng(Double.parseDouble(parkingLotInfoTemp.latitude),
+                    Double.parseDouble(parkingLotInfoTemp.longitude));
+
+            if (parkingLotInfoTemp.gln == nearestParkingLotGLN) {
+                iconFactory.setStyle(IconGenerator.STYLE_BLUE);
+            }
+            else if (parkingLotInfoTemp.availableSpaces > 0) {
+                iconFactory.setStyle(IconGenerator.STYLE_GREEN);
+            }
+            else {
+                iconFactory.setStyle(IconGenerator.STYLE_RED);
+            }
+            addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + ", "
+                    + Integer.toString(parkingLotInfoTemp.availableSpaces), coor);
+
+            Log.d("Main", "findParkingLots: added marker of " + parkingLotInfoTemp.gln + " at " +
+                    parkingLotInfoTemp.latitude + ", " + parkingLotInfoTemp.longitude);
+        }
     }
 
     /********************************* Google API Callbacks. **************************************/
@@ -482,21 +595,21 @@ public class MainActivity extends FragmentActivity
     }
 
     /* Get list of GLNs from Smart Search server */
-    private class GetGLNsFromSmartSearch extends AsyncTask<String, Void, ArrayList<GLN_list>> {
+    private class GetGLNsFromSmartSearch extends AsyncTask<String, Void, ArrayList<ParkingLotInfo>> {
         @Override
-        protected ArrayList<GLN_list> doInBackground(String... urls) {
+        protected ArrayList<ParkingLotInfo> doInBackground(String... urls) {
             String result=GET(urls[0]);
-            ArrayList<GLN_list> glnLists;
-            glnLists=PullParserFromXML(result);
+            ArrayList<ParkingLotInfo> glnLists;
+            glnLists=ParseGLNsFromXML(result);
 
             Log.d("Main", "GetGLNsFromSmartSearch: " + String.valueOf(glnLists.size()));
 
             return glnLists;
         }
 
-        public ArrayList<GLN_list> PullParserFromXML(String data){
-            ArrayList<GLN_list> xml=new ArrayList<GLN_list>();
-            GLN_list dummy=new GLN_list();
+        public ArrayList<ParkingLotInfo> ParseGLNsFromXML(String data){
+            ArrayList<ParkingLotInfo> xml=new ArrayList<ParkingLotInfo>();
+            ParkingLotInfo dummy=new ParkingLotInfo();
             boolean is_gln=false;
             boolean is_latitude=false;
             boolean is_longitude=false;
@@ -534,7 +647,7 @@ public class MainActivity extends FragmentActivity
                         case XmlPullParser.TEXT:
                             if(is_gln)
                             {
-                                dummy=new GLN_list();
+                                dummy=new ParkingLotInfo();
                                 dummy.gln=parser.getText();
                                 is_gln=false;
                             }
@@ -549,7 +662,7 @@ public class MainActivity extends FragmentActivity
                                 is_longitude=false;
                             }
                             if(is_address) {
-                                Log.i("address_test",parser.getText());
+                                //Log.d("Main",parser.getText());
                                 dummy.name_of_parking_lot = parser.getText();
                                 xml.add(dummy);
                                 is_address = false;
@@ -587,7 +700,7 @@ public class MainActivity extends FragmentActivity
             }
 
             QFDN = GLNToFQDN(GLN);
-            Log.d("Main", "GetEPCISURLFromONS: converted " + GLN + " to " + QFDN);
+            Log.d("GetEPCISURLFromONS", "converted " + GLN + " to " + QFDN);
 
             try {
                 Lookup.setDefaultResolver(new SimpleResolver(ONSAddress));
@@ -596,7 +709,7 @@ public class MainActivity extends FragmentActivity
             }
 
             try {
-                Log.d("Main", "GetEPCISURLFromONS: request " + QFDN + " to " + ONSAddress);
+                Log.d("GetEPCISURLFromONS", "request " + QFDN + " to " + ONSAddress);
                 Lookup lookup = new Lookup(QFDN, Type.NAPTR);
                 Record[] records = lookup.run();
 
@@ -605,23 +718,166 @@ public class MainActivity extends FragmentActivity
                         NAPTRRecord naptrRecord = (NAPTRRecord) record;
 
                         ONSRecord = naptrRecord.toString();
-                        Log.d("Main", "GetEPCISURLFromONS: result for " + QFDN + " : " + ONSRecord);
+                        Log.d("GetEPCISURLFromONS", "result for " + QFDN + " : " + ONSRecord);
                     }
                 }
             } catch (Exception e) {
-                Log.d("Main", "GetEPCISURLFromONS: " + e);
+                e.printStackTrace();
             }
 
             /* Parse NAPTR to get EPICS url */
             if (ONSRecord == null) {
-                Log.d("Main", "GetEPCISURLFromONS: ONSRecord is null");
+                Log.d("GetEPCISURLFromONS", "ONSRecord is null");
                 return null;
             }
 
             result = ONSRecord.substring(ONSRecord.indexOf("!^.*$!") + "!^.*$!".length(), ONSRecord.lastIndexOf('!'));
-            Log.d("Main", "GetEPCISURLFromONS: epcis url: " + result);
+            Log.d("GetEPCISURLFromONS", "epcis url: " + result);
 
             return result;
+        }
+    }
+
+    // Get Master data
+    private class GetMasterData extends AsyncTask<String, Integer, MasterData> {
+
+        @Override
+        protected MasterData doInBackground(String... urls) {
+            String result = GET(urls[0]);
+            MasterData masterData = parseMasterDataFromXML(result);
+            return masterData;
+        }
+
+        private MasterData parseMasterDataFromXML(String data) {
+            ArrayList<MasterData> xml = new ArrayList<MasterData>();
+            boolean is_parkingname = false;
+            boolean is_addressname = false;
+            MasterData dummy = new MasterData();
+            MasterData result = new MasterData();
+            String attribute;
+
+            Log.d("GetMasterData", "ParseMasterData starts");
+            try {
+                XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
+                XmlPullParser parser = factory.newPullParser();
+                String stag;
+
+                parser.setInput(new StringReader(data));
+
+                int eventtype = parser.getEventType();
+
+                Log.d("GetMasterData", String.valueOf(eventtype));
+                while (eventtype != XmlPullParser.END_DOCUMENT) {
+                    switch (eventtype) {
+                        case XmlPullParser.START_DOCUMENT:
+                            break;
+                        case XmlPullParser.END_DOCUMENT:
+                            break;
+                        case XmlPullParser.START_TAG:
+                            stag = parser.getName();
+                            Log.d("GetMasterData", stag);
+                            if (stag.equals("VocabularyElement")) {
+                                dummy = new MasterData();
+                                dummy.gln = parser.getAttributeValue(null, "id");
+                                Log.d("GetMasterData", dummy.gln);
+                            }
+                            if (stag.equals("attribute")) {
+                                attribute = parser.getAttributeValue(null, "id");
+                                if (attribute.equals("http://epcis.example.com/airport/name"))
+                                    is_parkingname = true;
+                                else if (attribute.equals("http://epcis.example.com/airport/address"))
+                                    is_addressname = true;
+                            }
+                            break;
+                        case XmlPullParser.TEXT:
+                            Log.d("GetMasterData", parser.getText());
+                            if (is_parkingname) {
+                                dummy.parking_name = parser.getText();
+                                Log.d("GetMasterData", parser.getText());
+                                is_parkingname = false;
+                            }
+                            if (is_addressname) {
+                                dummy.address = parser.getText();
+                                Log.d("GetMasterData", parser.getText());
+                                is_addressname = false;
+                                xml.add(dummy);
+                                dummy = null;
+                            }
+                    }
+                    eventtype = parser.next();
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+            Log.d("GetMasterData", String.valueOf(xml.size()));
+
+            if (xml.size() != 0) {
+                result = xml.get(0);
+            }
+
+            return result;
+        }
+    }
+
+    // Get Event data
+    private class GetEventData extends AsyncTask<String, Void, EventData> {
+
+        @Override
+        protected EventData doInBackground(String... urls) {
+            String result = GET(urls[0]);
+            return parseEventDataFromXML(result);
+        }
+
+        private EventData parseEventDataFromXML(String data) {
+
+            EventData eventData = new EventData();
+            boolean is_gln = false;
+            boolean is_smartparking = false;
+            Log.d("GetEventData", "parseEventDataFromXML: start");
+
+            try {
+                XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
+                XmlPullParser parser = factory.newPullParser();
+                String stag;
+
+                parser.setInput(new StringReader(data));
+
+                int eventtype = parser.getEventType();
+
+                Log.d("GetEventData", String.valueOf(eventtype));
+                while (eventtype != XmlPullParser.END_DOCUMENT) {
+                    switch (eventtype) {
+                        case XmlPullParser.START_DOCUMENT:
+                            break;
+                        case XmlPullParser.END_DOCUMENT:
+                            break;
+                        case XmlPullParser.START_TAG:
+                            stag = parser.getName();
+                            if (stag.equals("id"))
+                                is_gln = true;
+                            else if (stag.equals("smartparking:available_space"))
+                                is_smartparking = true;
+                            break;
+                        case XmlPullParser.TEXT:
+                            Log.d("GetEventData", String.valueOf(eventtype));
+                            if (is_gln) {
+                                Log.d("GetEventData", parser.getText());
+                                eventData.gln = parser.getText();
+                                is_gln = false;
+                            }
+                            if (is_smartparking) {
+                                Log.d("GetEventData", parser.getText());
+                                eventData.availableSpaces = Integer.parseInt(parser.getText());
+                                is_smartparking = false;
+                            }
+                    }
+                    eventtype = parser.next();
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+
+            return eventData;
         }
     }
 }
