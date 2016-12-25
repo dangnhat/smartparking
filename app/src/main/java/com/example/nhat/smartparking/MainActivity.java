@@ -77,6 +77,7 @@ public class MainActivity extends FragmentActivity
         public String gln;
         public String parking_name;
         public String address;
+        public int maxCapacity;
     }
 
     // Event data format
@@ -91,7 +92,7 @@ public class MainActivity extends FragmentActivity
     private int UpdatingPeriod = 2*60*1000; // ms
 
     // Smart search URL
-    String SmartSearchURL = "http://143.248.53.173:10023/epcis/Service/Poll/SimpleEventQuery?";
+    String SmartSearchURL = "http://143.248.53.173:10023/epcis/Service/Poll/SimpleEventQuery?&orderBy=recordTime&orderDirection=DESC&";
 
     // ONS
     String ONSAddress = "110.76.91.123";
@@ -271,22 +272,22 @@ public class MainActivity extends FragmentActivity
         }
 
         /* Use GLNs to get EPCIS server urls */
-//        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
-//            GetEPCISURLFromONS getEPCISURLTask = new GetEPCISURLFromONS();
-//            getEPCISURLTask.execute(ONSAddress, parkingLotInfoTemp.gln);
-//            try {
-//                parkingLotInfoTemp.EPCISServer = getEPCISURLTask.get();
-//                Log.d("Main", "findParkingLots: got EPCIS URL for " + parkingLotInfoTemp.gln + ": "
-//                + parkingLotInfoTemp.EPCISServer);
-//            }
-//            catch (Exception e) {
-//                e.printStackTrace();
-//            }
-//        }
-        /* Test while ONS is not available */
         for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
-            parkingLotInfoTemp.EPCISServer = "http://143.248.53.173:10022";
+            GetEPCISURLFromONS getEPCISURLTask = new GetEPCISURLFromONS();
+            getEPCISURLTask.execute(ONSAddress, parkingLotInfoTemp.gln);
+            try {
+                parkingLotInfoTemp.EPCISServer = getEPCISURLTask.get();
+                Log.d("Main", "findParkingLots: got EPCIS URL for " + parkingLotInfoTemp.gln + ": "
+                        + parkingLotInfoTemp.EPCISServer);
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
         }
+        /* Test while ONS is not available */
+//        for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
+//            parkingLotInfoTemp.EPCISServer = "http://143.248.53.173:10022";
+//        }
 
         /* Get Master and Event data */
         for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
@@ -305,7 +306,9 @@ public class MainActivity extends FragmentActivity
                 MasterData masterData = getMasterDataTask.get();
 
                 parkingLotInfoTemp.address = masterData.address;
+                parkingLotInfoTemp.maxCapacity = masterData.maxCapacity;
                 Log.d("Main", "findParkingLots: address: " + parkingLotInfoTemp.address);
+                Log.d("Main", "findParkingLots: maxCapacity: " + Integer.toString(parkingLotInfoTemp.maxCapacity));
             }
             catch (Exception e) {
                 e.printStackTrace();
@@ -354,7 +357,7 @@ public class MainActivity extends FragmentActivity
                 nearestParkingLotGLN = parkingLotInfoTemp.gln;
 
                 Log.d("Main", "findParkingLots: min_distance updated: " + String.valueOf(distance)
-                    + "(m) gln: " + nearestParkingLotGLN);
+                        + "(m) gln: " + nearestParkingLotGLN);
             }
             else {
                 Log.d("Main", "findParkingLots: distance >= min_distance, do nothing");
@@ -379,7 +382,8 @@ public class MainActivity extends FragmentActivity
                 iconFactory.setStyle(IconGenerator.STYLE_RED);
             }
             addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + ", "
-                    + Integer.toString(parkingLotInfoTemp.availableSpaces), coor);
+                    + Integer.toString(parkingLotInfoTemp.availableSpaces) + "/"
+                    + Integer.toString(parkingLotInfoTemp.maxCapacity), coor);
 
             Log.d("Main", "findParkingLots: added marker of " + parkingLotInfoTemp.gln + " at " +
                     parkingLotInfoTemp.latitude + ", " + parkingLotInfoTemp.longitude);
@@ -607,13 +611,27 @@ public class MainActivity extends FragmentActivity
             return glnLists;
         }
 
+        public boolean traverse_array(String gln, ArrayList<String> list)
+        {
+            int i = 0;
+            for (i = 0; i<list.size(); i++)
+            {
+                if (gln.equals(list.get(i)))
+                    return true;
+            }
+            return false;
+        }
+
         public ArrayList<ParkingLotInfo> ParseGLNsFromXML(String data){
             ArrayList<ParkingLotInfo> xml=new ArrayList<ParkingLotInfo>();
+            ArrayList<String> delete_list=new ArrayList<String>();
             ParkingLotInfo dummy=new ParkingLotInfo();
             boolean is_gln=false;
             boolean is_latitude=false;
             boolean is_longitude=false;
             boolean is_address=false;
+            boolean is_action=false;
+            boolean is_delete_gln=false;
             Log.d("Main","PullParserFromXML: start parsing");
             try
             {
@@ -629,7 +647,6 @@ public class MainActivity extends FragmentActivity
                     switch(eventtype)
                     {
                         case XmlPullParser.START_DOCUMENT:
-
                             break;
                         case XmlPullParser.END_DOCUMENT:
                             break;
@@ -637,31 +654,55 @@ public class MainActivity extends FragmentActivity
                             stag=parser.getName();
                             if(stag.equals("id"))
                                 is_gln=true;
-                            else if(stag.equals("parkingspace:gps_latitude"))
+                            else if(stag.equals("parkingspace:gps_latitude") && !is_delete_gln)
                                 is_latitude=true;
-                            else if(stag.equals("parkingspace:gps_longitude"))
+                            else if(stag.equals("parkingspace:gps_longitude") && !is_delete_gln)
                                 is_longitude=true;
-                            else if(stag.equals("parkingspace:parkingspace_name"))
+                            else if(stag.equals("parkingspace:parkingspace_name") && !is_delete_gln)
                                 is_address=true;
+                            else if(stag.equals("action"))
+                                is_action=true;
                             break;
                         case XmlPullParser.TEXT:
-                            if(is_gln)
+                            if(is_delete_gln && is_gln)
                             {
-                                dummy=new ParkingLotInfo();
-                                dummy.gln=parser.getText();
+                                //if it is in delete_list and it is gln
+                                Log.i("tester",parser.getText());
+                                delete_list.add(parser.getText());
+                                //add to the delete list
                                 is_gln=false;
                             }
-                            if(is_latitude)
+                            else if(is_action)
+                            {
+                                Log.i("event",parser.getText());
+                                if(parser.getText().equals("ADD"))
+                                    is_delete_gln=false;
+                                if(parser.getText().equals("DELETE"))
+                                    is_delete_gln=true;
+                                is_action=false;
+                            }
+                            else if(is_gln)
+                            {
+                                if(traverse_array(parser.getText(),delete_list))
+                                    is_delete_gln=true;
+                                else {
+                                    is_delete_gln=false;
+                                    dummy = new ParkingLotInfo();
+                                    dummy.gln = parser.getText();
+                                }
+                                is_gln = false;
+                            }
+                            else if(is_latitude)
                             {
                                 dummy.latitude=parser.getText();
                                 is_latitude=false;
                             }
-                            if(is_longitude)
+                            else if(is_longitude)
                             {
                                 dummy.longitude=parser.getText();
                                 is_longitude=false;
                             }
-                            if(is_address) {
+                            else if(is_address) {
                                 //Log.d("Main",parser.getText());
                                 dummy.name_of_parking_lot = parser.getText();
                                 xml.add(dummy);
@@ -719,6 +760,18 @@ public class MainActivity extends FragmentActivity
 
                         ONSRecord = naptrRecord.toString();
                         Log.d("GetEPCISURLFromONS", "result for " + QFDN + " : " + ONSRecord);
+
+                        /* check the service file in NAPTR recore */
+                        result = ONSRecord.substring(ONSRecord.indexOf("\"")+1, ONSRecord.indexOf("\"")+2);
+                        Log.d("GetEPCISURLFromONS", "RYUN: " + result);
+                        if (result.equals("u") || result.equals("U") ) {
+                            result = ONSRecord.substring(ONSRecord.indexOf("www"), ONSRecord.indexOf("!^.*$!")-3);
+                            Log.d("GetEPCISURLFromONS", "RYUN: " + result);
+                            if (result.equals("www.parking-space-finder.org/freespace"))
+                                break;
+                        }
+
+                        /////////
                     }
                 }
             } catch (Exception e) {
@@ -752,6 +805,7 @@ public class MainActivity extends FragmentActivity
             ArrayList<MasterData> xml = new ArrayList<MasterData>();
             boolean is_parkingname = false;
             boolean is_addressname = false;
+            boolean is_max=false;
             MasterData dummy = new MasterData();
             MasterData result = new MasterData();
             String attribute;
@@ -787,6 +841,8 @@ public class MainActivity extends FragmentActivity
                                     is_parkingname = true;
                                 else if (attribute.equals("http://epcis.example.com/airport/address"))
                                     is_addressname = true;
+                                else if(attribute.equals("http://epcis.example.com/airport/max_capacity"))
+                                    is_max=true;
                             }
                             break;
                         case XmlPullParser.TEXT:
@@ -800,8 +856,13 @@ public class MainActivity extends FragmentActivity
                                 dummy.address = parser.getText();
                                 Log.d("GetMasterData", parser.getText());
                                 is_addressname = false;
+                            }
+                            if(is_max) {
+                                Log.d("GetMasterData", "RYUN "+parser.getText());
+                                dummy.maxCapacity=Integer.parseInt(parser.getText());
                                 xml.add(dummy);
-                                dummy = null;
+                                is_max=false;
+                                dummy=null;
                             }
                     }
                     eventtype = parser.next();
