@@ -288,24 +288,23 @@ public class MainActivity extends FragmentActivity
 
         @Override
         public void run() {
-            // Progress
-            spinner.setVisibility(View.VISIBLE);
-            progressText.setText("Progress: 50%, Updating parking lots info.");
-
             Log.d("Main", "timerRunnable: update parking lots info");
 
             updateParkingLotsInfo updateParkingLotsInfoTask = new updateParkingLotsInfo ();
             updateParkingLotsInfoTask.execute();
-            try {
-                updateParkingLotsInfoTask.get();
-            }
-            catch (Exception e) {
-                e.printStackTrace();
-            }
+        }
+    };
 
-            Log.d("Main", "timerRunnable: post timerRunnable for " + UpdatingPeriod/1000 + "s");
-            timerHandler.postDelayed(this, UpdatingPeriod);
+    private class updateParkingLotsInfo extends AsyncTask<String, String, Void> {
+        @Override
+        protected void onPreExecute() {
+            // Progress
+            spinner.setVisibility(View.VISIBLE);
+            progressText.setText("Progress: 50%, Updating info.");
+        }
 
+        @Override
+        protected void onPostExecute(Void result) {
             /* Show on map */
             /* find the nearest parking lot with free spaces */
             String nearestParkingLotGLN = null;
@@ -337,7 +336,6 @@ public class MainActivity extends FragmentActivity
             Log.d("Main", "button1Clicked: nearest gln: " + nearestParkingLotGLN);
 
             mMap.clear();
-
             for (ParkingLotInfo parkingLotInfoTemp : ParkingLotInfoList) {
                 LatLng coor = new LatLng(Double.parseDouble(parkingLotInfoTemp.latitude),
                         Double.parseDouble(parkingLotInfoTemp.longitude));
@@ -351,21 +349,32 @@ public class MainActivity extends FragmentActivity
                 else {
                     iconFactory.setStyle(IconGenerator.STYLE_RED);
                 }
-                addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + ", "
-                        + Integer.toString(parkingLotInfoTemp.availableSpaces) + "/"
-                        + Integer.toString(parkingLotInfoTemp.maxCapacity), coor);
+                addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + "\n"
+                        + "Free: " + Integer.toString(parkingLotInfoTemp.availableSpaces) + "\n"
+                        + "Max capacity: " + Integer.toString(parkingLotInfoTemp.maxCapacity) + "\n"
+                        + "Address: " + parkingLotInfoTemp.address + "\n"
+                        + "GLN: " + parkingLotInfoTemp.gln, coor);
 
                 Log.d("Main", "button1Clicked: added marker of " + parkingLotInfoTemp.gln + " at " +
                         parkingLotInfoTemp.latitude + ", " + parkingLotInfoTemp.longitude);
             }
 
+            /* Enable updating parking lots info */
+            Log.d("Main", "button1Clicked: post timerRunnable for " + UpdatingPeriod/1000 + "s");
+            timerHandler.removeCallbacks(timerRunnable);
+            timerHandler.postDelayed(timerRunnable, UpdatingPeriod);
+
             // Progress
             spinner.setVisibility(View.GONE);
             progressText.setText("Progress: 100%, Done.");
         }
-    };
 
-    private class updateParkingLotsInfo extends AsyncTask<String, Void, Void> {
+        @Override
+        protected void onProgressUpdate(String... values) {
+            // Progress
+            progressText.setText(values[0]);
+        }
+
         @Override
         protected Void doInBackground (String... params) {
             /* Get Event data */
@@ -890,9 +899,11 @@ public class MainActivity extends FragmentActivity
                 else {
                     iconFactory.setStyle(IconGenerator.STYLE_RED);
                 }
-                addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + ", "
-                        + Integer.toString(parkingLotInfoTemp.availableSpaces) + "/"
-                        + Integer.toString(parkingLotInfoTemp.maxCapacity), coor);
+                addIcon(mMap, iconFactory, parkingLotInfoTemp.name_of_parking_lot + "\n"
+                        + "Free: " + Integer.toString(parkingLotInfoTemp.availableSpaces) + "\n"
+                        + "Max capacity: " + Integer.toString(parkingLotInfoTemp.maxCapacity) + "\n"
+                        + "Address: " + parkingLotInfoTemp.address + "\n"
+                        + "GLN: " + parkingLotInfoTemp.gln, coor);
 
                 Log.d("Main", "button1Clicked: added marker of " + parkingLotInfoTemp.gln + " at " +
                         parkingLotInfoTemp.latitude + ", " + parkingLotInfoTemp.longitude);
